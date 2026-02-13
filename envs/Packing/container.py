@@ -4,8 +4,10 @@ from functools import reduce
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
-from scipy.spatial import ConvexHull
-from matplotlib.path import Path
+# [수정] 기존 ConvexHull 기반 안정성 판정을 제거하고 4점 지지 규칙으로 대체함.
+# 아래 import는 과거 ConvexHull 로직에서만 사용되므로 주석 처리.
+# from scipy.spatial import ConvexHull
+# from matplotlib.path import Path
 
 from .ems import compute_ems
 from .utils import *
@@ -250,55 +252,49 @@ class Container(object):
         Returns:
 
         """
-        def on_segment(P1, P2, Q):
-            if ((Q[0] - P1[0]) * (P2[1] - P1[1]) == (P2[0] - P1[0]) * (Q[1] - P1[1]) and
-                min(P1[0], P2[0]) <= Q[0] <= max(P1[0], P2[0]) and
-                min(P1[1], P2[1]) <= Q[1] <= max(P1[1], P2[1])):
-                return True
-            else:
-                return False
-
         # item on the ground of the bin
         if position[2] == 0:
             return True
 
-        # calculate barycentric coordinates, -1 means coordinate indices start at zero
-        x_1 = position[0]
-        x_2 = x_1 + dimension[0] - 1
-        y_1 = position[1]
-        y_2 = y_1 + dimension[1] - 1
-        z = position[2] - 1
-        obj_center = ((x_1 + x_2) / 2, (y_1 + y_2) / 2)
+        # [Fix] 기존 ConvexHull 중심점 포함 여부 판정 대신,
+        #       4점 지지 판정으로 candidate 위치 안정성 검사 수행으로 로직 수정 완료.(26.02.13)
+        # [Add] 박스 밑면의 네 모서리(코너 패치)가 모두 동일 지지 높이(base_z)인지 검사.
+        px, py, pz = int(position[0]), int(position[1]), int(position[2])
+        dx, dy = int(dimension[0]), int(dimension[1])
 
-        # valid points right under this object
-        points = []
-        for x in range(x_1, x_2 + 1):
-            for y in range(y_1, y_2 + 1):
-                if self.heightmap[x][y] == (z + 1):
-                    points.append([x, y])
-
-        # the support area is more than half of the bottom surface of the item
-        if len(points) > dimension[0] * dimension[1] * 0.5:
-            return True
-        
-        if len(points) == 0 or len(points) == 1: 
+        region = self.heightmap[px:px + dx, py:py + dy]
+        if region.size == 0:
             return False
-        elif len(points) == 2: # whether the center lies on the line of the two points
-            return on_segment(points[0], points[1], obj_center)
-        else:
-            # calculate the convex hull of the points
-            points = np.array(points)
-            try:
-                convex_hull = ConvexHull(points)
-            except:
-                # error means co-lines
-                start_p = min(points, key=lambda p: [p[0], p[1]])
-                end_p = max(points, key=lambda p: [p[0], p[1]])
-                return on_segment(start_p, end_p, obj_center)
 
-            hull_path = Path(points[convex_hull.vertices])
+        # [Fix] check_box/check_box_ems에서 계산한 높이(pz)와
+        #        현재 바닥 영역의 최대 높이(base_z)가 불일치하면 불안정으로 처리.
+        base_z = int(np.max(region))
+        if base_z != pz:
+            return False
 
-            return hull_path.contains_point(obj_center)
+        corner_cell = 1
+        c = min(corner_cell, region.shape[0], region.shape[1])
+
+        # [Add] 네 모서리 코너 패치 추출:
+        #        (min x,min y), (max x,min y), (min x,max y), (max x,max y)
+        c00 = region[0:c, 0:c]
+        c10 = region[-c:, 0:c]
+        c01 = region[0:c, -c:]
+        c11 = region[-c:, -c:]
+
+        # [Add] 네 코너 모두 base_z와 동일해야 지지된 것으로 간주.
+        corners_supported = all(
+            patch.size and np.all(patch == base_z)
+            for patch in (c00, c10, c01, c11)
+        )
+        if not corners_supported:
+            return False
+
+        # [Delete] 기존 ConvexHull 기반 로직:
+        # - 지지 면적 50% 초과면 통과
+        # - 2점 지지 시 중심점 선분 포함 검사
+        # - ConvexHull 내부 포함 검사
+        return True
 
     def get_volume_ratio(self):
         vo = reduce(lambda x, y: x + y, [box.size_x * box.size_y * box.size_z for box in self.boxes], 0.0)
