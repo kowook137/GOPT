@@ -118,6 +118,32 @@ class EncoderBlock(nn.Module):
         return item_on_ems, ems_on_item
     
 
+def _obs_get(obs: Any, key: str) -> Any:
+    # Tianshou Batch와 dict 관측을 모두 같은 방식으로 읽기 위한 헬퍼다.
+    if isinstance(obs, dict):
+        return obs[key]
+    if hasattr(obs, key):
+        return getattr(obs, key)
+    return obs[key]
+
+
+def _to_tensor(
+    value: Any,
+    device: Union[str, int, torch.device],
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device, dtype=dtype)
+    return torch.as_tensor(value, dtype=dtype, device=device)
+
+
+def _ensure_batch_dim(tensor: torch.Tensor, target_ndim: int) -> torch.Tensor:
+    # 단일 샘플 입력도 배치 차원을 갖도록 맞춰 네트워크 경로를 단순화한다.
+    while tensor.ndim < target_ndim:
+        tensor = tensor.unsqueeze(0)
+    return tensor
+
+
 class ActorHead(nn.Module):
     def __init__(
         self,
@@ -141,23 +167,18 @@ class ActorHead(nn.Module):
 
     def forward(
         self, 
-        obs: Dict, 
+        obs: Any,
         state: Any = None,
         info: Dict[str, Any] = {}
     ) -> Tuple[torch.Tensor, Any]:
-        batch_size = obs.obs.shape[0]
+        mask = _to_tensor(_obs_get(obs, "mask"), self.device, torch.bool)
+        mask = _ensure_batch_dim(mask, 2)
 
-        if self.padding_mask:
-            mask = torch.as_tensor(obs.mask, dtype=torch.bool, device=self.device)
-            mask = torch.sum(mask.reshape(batch_size, -1, 2), dim=-1).bool()
-        else:
-            mask = None
-
-        item_embedding, ems_embedding, hidden = self.preprocess(obs.obs, state, mask)
-        item_embedding = self.layer_1(item_embedding)
-        ems_embedding = self.layer_2(ems_embedding).permute(0, 2, 1)
-
-        logits = torch.bmm(item_embedding, ems_embedding).reshape(batch_size, -1)
+        # next_box 임베딩을 후보 임베딩과 매칭해 각 후보의 정책 로그릿을 계산한다.
+        item_embedding, cand_embedding, hidden = self.preprocess(obs, state, mask)
+        item_context = self.layer_1(item_embedding).mean(dim=1, keepdim=True)
+        cand_embedding = self.layer_2(cand_embedding).transpose(1, 2)
+        logits = torch.bmm(item_context, cand_embedding).squeeze(1)
 
         return logits, hidden
     
@@ -194,24 +215,21 @@ class CriticHead(nn.Module):
 
     def forward(
         self, 
-        obs: Union[np.ndarray, torch.Tensor], 
+        obs: Any,
         **kwargs: Any
     ) -> torch.Tensor:
-        batch_size = obs.shape[0]
-        mask = torch.as_tensor(obs.mask, dtype=torch.bool, device=self.device)
-        mask = torch.sum(mask.reshape(batch_size, -1, 2), dim=-1).bool()
-        if self.padding_mask:
-            item_embedding, ems_embedding, _ = self.preprocess(obs.obs, mask)
-        else:
-            item_embedding, ems_embedding, _ = self.preprocess(obs.obs)
+        mask = _to_tensor(_obs_get(obs, "mask"), self.device, torch.bool)
+        mask = _ensure_batch_dim(mask, 2)
 
-        item_embedding = self.layer_1(item_embedding)
-        ems_embedding = self.layer_2(ems_embedding)
+        # 후보 임베딩은 유효 후보(mask)만 평균내서 상태 가치를 계산한다.
+        item_embedding, cand_embedding, _ = self.preprocess(obs, None, mask)
+        item_embedding = self.layer_1(item_embedding).mean(dim=1)
+        cand_embedding = self.layer_2(cand_embedding)
+        mask_f = mask.float().unsqueeze(-1)
+        denom = mask_f.sum(dim=1).clamp_min(1.0)
+        cand_embedding = (cand_embedding * mask_f).sum(dim=1) / denom
 
-        item_embedding = torch.sum(item_embedding, dim=-2)
-        ems_embedding = torch.sum(ems_embedding * mask[..., None], dim=-2)
-
-        joint_embedding = torch.cat((item_embedding, ems_embedding), dim=-1)
+        joint_embedding = torch.cat((item_embedding, cand_embedding), dim=-1)
 
         state_value = self.layer_3(joint_embedding)
         return state_value
@@ -237,12 +255,7 @@ class ShareNet(nn.Module):
         self.k_placement = k_placement
         self.container_size = container_size
         self.place_gen = place_gen
-        if place_gen == "EMS":
-            input_size = 6
-        else:
-            input_size = 3
-
-        self.factor = 1 / max(container_size)
+        input_size = 7  # [box_dims(3), pos(3), orientation(1)]
         
         self.item_encoder = nn.Sequential(
             init_(nn.Linear(3, 32)),
@@ -270,52 +283,73 @@ class ShareNet(nn.Module):
 
     def forward(
         self, 
-        obs: Union[np.ndarray, torch.Tensor], 
+        obs: Any,
         state: Any = None,
-        mask: Union[np.ndarray, torch.Tensor] = None
+        mask: Union[np.ndarray, torch.Tensor, None] = None,
     ) -> Tuple[torch.Tensor, Any]:
-        if not isinstance(obs, torch.Tensor):
-            obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device) * self.factor
-        if not isinstance(mask, torch.Tensor) and mask is not None:
-            mask = torch.as_tensor(mask, dtype=torch.float32, device=self.device)  # (batch_size, k_placement)
-        
-        obs_hm, obs_next, obs_placements = obs2input(obs, self.container_size, self.place_gen)
+        boxes_array = _to_tensor(_obs_get(obs, "boxes_array"), self.device, torch.float32)
+        next_box = _to_tensor(_obs_get(obs, "next_box"), self.device, torch.float32)
+        bin_dims = _to_tensor(_obs_get(obs, "bin_dims"), self.device, torch.float32)
+        cand_boxes = _to_tensor(_obs_get(obs, "candidate_boxes"), self.device, torch.float32)
+        cand_pos = _to_tensor(_obs_get(obs, "candidate_positions"), self.device, torch.float32)
+        cand_ori = _to_tensor(_obs_get(obs, "candidate_oris"), self.device, torch.float32)
+        obs_mask = _to_tensor(_obs_get(obs, "mask"), self.device, torch.bool)
 
-        item_embedding = self.item_encoder(obs_next)  # (batch_size, 2, emded_size)
-        placement_embedding = self.placement_encoder(obs_placements)  # (batch_size, k_placement, emded_size)
+        boxes_array = _ensure_batch_dim(boxes_array, 3)
+        next_box = _ensure_batch_dim(next_box, 3)
+        bin_dims = _ensure_batch_dim(bin_dims, 2)
+        cand_boxes = _ensure_batch_dim(cand_boxes, 3)
+        cand_pos = _ensure_batch_dim(cand_pos, 3)
+        cand_ori = _ensure_batch_dim(cand_ori, 2)
+        obs_mask = _ensure_batch_dim(obs_mask, 2)
+
+        if mask is None:
+            mask_t = obs_mask
+        else:
+            mask_t = _to_tensor(mask, self.device, torch.bool)
+            mask_t = _ensure_batch_dim(mask_t, 2)
+
+        # mm 스케일 입력을 bin 크기 기준으로 정규화해 bin 타입이 달라도 수치 범위를 안정화한다.
+        bw = bin_dims[:, 0:1].clamp_min(1.0)
+        bd = bin_dims[:, 1:2].clamp_min(1.0)
+        bh = bin_dims[:, 2:3].clamp_min(1.0)
+
+        boxes_norm = boxes_array.clone()
+        boxes_norm[:, :, 0] = boxes_norm[:, :, 0] / bw
+        boxes_norm[:, :, 1] = boxes_norm[:, :, 1] / bd
+        boxes_norm[:, :, 2] = boxes_norm[:, :, 2] / bh
+        boxes_norm[:, :, 3] = boxes_norm[:, :, 3] / bw
+        boxes_norm[:, :, 4] = boxes_norm[:, :, 4] / bd
+        boxes_norm[:, :, 5] = boxes_norm[:, :, 5] / bh
+
+        next_box_norm = next_box.clone()
+        next_box_norm[:, :, 0] = next_box_norm[:, :, 0] / bw
+        next_box_norm[:, :, 1] = next_box_norm[:, :, 1] / bd
+        next_box_norm[:, :, 2] = next_box_norm[:, :, 2] / bh
+
+        cand_boxes_norm = cand_boxes.clone()
+        cand_boxes_norm[:, :, 0] = cand_boxes_norm[:, :, 0] / bw
+        cand_boxes_norm[:, :, 1] = cand_boxes_norm[:, :, 1] / bd
+        cand_boxes_norm[:, :, 2] = cand_boxes_norm[:, :, 2] / bh
+
+        cand_pos_norm = cand_pos.clone()
+        cand_pos_norm[:, :, 0] = cand_pos_norm[:, :, 0] / bw * 2.0 - 1.0
+        cand_pos_norm[:, :, 1] = cand_pos_norm[:, :, 1] / bd * 2.0 - 1.0
+        cand_pos_norm[:, :, 2] = cand_pos_norm[:, :, 2] / bh * 2.0 - 1.0
+
+        # next_box(정방향/회전) 두 토큰을 item query로 사용한다.
+        item_embedding = self.item_encoder(next_box_norm)
+
+        cand_feature = torch.cat(
+            [cand_boxes_norm, cand_pos_norm, cand_ori.unsqueeze(-1)],
+            dim=-1,
+        )
+        placement_embedding = self.placement_encoder(cand_feature)
 
         for layer in self.backbone:
-            item_embedding, placement_embedding = layer(item_embedding, placement_embedding, mask)
+            item_embedding, placement_embedding = layer(item_embedding, placement_embedding, mask_t)
 
         return item_embedding, placement_embedding, state
-
-
-def obs2input(
-    obs: torch.Tensor, 
-    container_size: Sequence[int],
-    place_gen: str = "EMS",
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """ 
-        convert obsversation to input of the network
-
-    Returns:
-        hm:         (batch, 1, L, W)
-        next_size:  (batch, 2, 3)
-        placements: (batch, k_placement, 6)
-    """
-    batch_size = obs.shape[0]
-    hm = obs[:, :container_size[0]*container_size[1]].reshape((batch_size, 1, container_size[0], container_size[1]))
-    next_size = obs[:, container_size[0]*container_size[1]:container_size[0]*container_size[1] + 6]
-    # [[l, w, h], [w, l, h]]
-    next_size = next_size.reshape((batch_size, 2, 3))
-    
-    if place_gen == "EMS":
-        # (x_1, y_1, z_1, x_2, y_2, H)
-        placements = obs[:, container_size[0]*container_size[1] + 6:].reshape((batch_size, -1, 6))
-    else:
-        placements = obs[:, container_size[0]*container_size[1] + 6:].reshape((batch_size, -1, 3))
-
-    return hm, next_size, placements
 
 
 def init(module, weight_init, bias_init, gain=1):
@@ -324,4 +358,3 @@ def init(module, weight_init, bias_init, gain=1):
     return module
 
 init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), nn.init.calculate_gain('leaky_relu'))
-

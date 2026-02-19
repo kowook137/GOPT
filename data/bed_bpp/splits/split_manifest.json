@@ -1,0 +1,28 @@
+{
+  "source": "GOPT/bed-bpp_v1.json",
+  "seed": 42,
+  "ratios": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+  },
+  "counts": {
+    "train": 8003,
+    "val": 1000,
+    "test": 1000
+  },
+  "target_counts": {
+    "train": {
+      "rollcontainer": 4414,
+      "euro-pallet": 3589
+    },
+    "val": {
+      "euro-pallet": 468,
+      "rollcontainer": 532
+    },
+    "test": {
+      "rollcontainer": 525,
+      "euro-pallet": 475
+    }
+  }
+}

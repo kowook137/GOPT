@@ -85,8 +85,8 @@ class MaskedA2CPolicy(A2CPolicy):
         v_s, v_s_ = [], []
         with torch.no_grad():
             for minibatch in batch.split(self._batch, shuffle=False, merge_last=True):
-                v_s.append(self.critic(minibatch.obs.obs))
-                v_s_.append(self.critic(minibatch.obs_next.obs))
+                v_s.append(self.critic(minibatch.obs))
+                v_s_.append(self.critic(minibatch.obs_next))
         batch.v_s = torch.cat(v_s, dim=0).flatten()  # old value
         v_s = batch.v_s.cpu().numpy()
         v_s_ = torch.cat(v_s_, dim=0).flatten().cpu().numpy()
@@ -128,7 +128,7 @@ class MaskedA2CPolicy(A2CPolicy):
                 log_prob = log_prob.reshape(len(minibatch.adv), -1).transpose(0, 1)
                 actor_loss = -(log_prob * minibatch.adv).mean()
                 # calculate loss for critic
-                value = self.critic(minibatch.obs.obs).flatten()
+                value = self.critic(minibatch.obs).flatten()
                 vf_loss = F.mse_loss(minibatch.returns, value)
                 # calculate regularization and overall loss
                 ent_loss = dist.entropy().mean()

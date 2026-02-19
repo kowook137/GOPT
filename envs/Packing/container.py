@@ -15,7 +15,15 @@ from .box import Box
 
 
 class Container(object):
-    def __init__(self, length=10, width=10, height=10, rotation=True):
+    def __init__(
+        self,
+        length=10,
+        width=10,
+        height=10,
+        rotation=True,
+        max_boxes=300,
+        box_type_to_id=None,
+    ):
         self.dimension = np.array([length, width, height])
         self.heightmap = np.zeros(shape=(length, width), dtype=np.int32)
         self.can_rotate = rotation
@@ -25,6 +33,52 @@ class Container(object):
         self.rot_flags = []
         self.height = height
         self.candidates = [[0, 0, 0]]
+        self.max_boxes = int(max_boxes)
+        self.box_type_to_id = dict(box_type_to_id or {})
+        # 관측 입력용 고정 길이 박스 버퍼
+        self.boxes_array = np.zeros((self.max_boxes, 10), dtype=np.float32)
+
+    def configure_observation_buffer(self, max_boxes=None, box_type_to_id=None):
+        if max_boxes is not None and int(max_boxes) != self.max_boxes:
+            self.max_boxes = int(max_boxes)
+            self.boxes_array = np.zeros((self.max_boxes, 10), dtype=np.float32)
+        if box_type_to_id is not None:
+            self.box_type_to_id = dict(box_type_to_id)
+
+    def register_box_type(self, box_type: str) -> int:
+        if box_type not in self.box_type_to_id:
+            self.box_type_to_id[box_type] = len(self.box_type_to_id)
+        return int(self.box_type_to_id[box_type])
+
+    def get_boxes_array(self, normalize=False):
+        array = self.boxes_array.copy()
+        if not normalize:
+            return array
+        # 위치와 크기만 컨테이너 기준으로 정규화한다.
+        array[:, 0] /= float(self.dimension[0])
+        array[:, 1] /= float(self.dimension[1])
+        array[:, 2] /= float(self.dimension[2])
+        array[:, 3] /= float(self.dimension[0])
+        array[:, 4] /= float(self.dimension[1])
+        array[:, 5] /= float(self.dimension[2])
+        return array
+
+    def _write_box_row(self, index: int, box: Box):
+        if index >= self.max_boxes:
+            return
+        box_id_norm = float(index / max(1, self.max_boxes - 1))
+        self.boxes_array[index] = [
+            float(box.pos_x),
+            float(box.pos_y),
+            float(box.pos_z),
+            float(box.size_x),
+            float(box.size_y),
+            float(box.size_z),
+            float(box.orientation),
+            float(box.box_type_id),
+            box_id_norm,
+            1.0,
+        ]
 
     def print_heightmap(self):
         print("container heightmap: \n", self.heightmap)
@@ -323,7 +377,7 @@ class Container(object):
         assert position[0] < self.dimension[0] and position[1] < self.dimension[1]
         return position[0] * self.dimension[1] + position[1]
 
-    def place_box(self, box_size, pos, rot_flag):
+    def place_box(self, box_size, pos, rot_flag, box_type="unknown", box_type_id=None):
         """ place box in the position (index), then update heightmap
         :param box_size:
         :param idx:
@@ -340,10 +394,25 @@ class Container(object):
         plain = self.heightmap
         new_h = self.check_box([size_x, size_y, size_z], [pos[0], pos[1]])
         if new_h != -1:
-            self.boxes.append(Box(size_x, size_y, size_z, pos[0], pos[1], pos[2]))  # record rotated box
+            if box_type_id is None:
+                box_type_id = self.register_box_type(str(box_type))
+            box = Box(
+                size_x,
+                size_y,
+                size_z,
+                pos[0],
+                pos[1],
+                pos[2],
+                orientation=int(rot_flag),
+                box_type=str(box_type),
+                box_type_id=int(box_type_id),
+                box_id=len(self.boxes),
+            )
+            self.boxes.append(box)  # record rotated box
             self.rot_flags.append(rot_flag)
             self.heightmap = self.update_heightmap(plain, self.boxes[-1])
             self.height = max(self.height, pos[2] + size_z)
+            self._write_box_row(len(self.boxes) - 1, box)
             return True
         return False
 

@@ -16,6 +16,7 @@ import time
 import pprint
 import shutil
 import random
+from pathlib import Path
 
 import numpy as np
 import gymnasium as gym
@@ -37,28 +38,63 @@ from masked_a2c import MaskedA2CPolicy
 from mycollector import PackCollector
  
 
+def _get_env_value(args, key, default=None):
+    if key in args.env:
+        return args.env[key]
+    return default
+
+
+def _resolve_dataset_path(path_str: str) -> str:
+    # 실행 위치가 달라도 split 경로를 안정적으로 찾기 위해 ts_train.py 기준 경로를 한 번 더 확인한다.
+    p = Path(path_str)
+    if p.exists():
+        return str(p)
+    alt = Path(__file__).resolve().parent / p
+    if alt.exists():
+        return str(alt)
+    return str(p)
+
+
+def _build_env_kwargs(args, dataset_path):
+    max_candidates = int(_get_env_value(args, "max_candidates", _get_env_value(args, "k_placement", 80)))
+    return dict(
+        container_size=_get_env_value(args, "container_size", [10, 10, 10]),
+        enable_rotation=_get_env_value(args, "rot", True),
+        data_type="bed",
+        bed_dataset_path=dataset_path,
+        bed_dataset_seed=int(_get_env_value(args, "bed_dataset_seed", args.seed)),
+        bed_dataset_shuffle_orders=bool(_get_env_value(args, "bed_dataset_shuffle_orders", True)),
+        bed_target_height=int(_get_env_value(args, "bed_target_height", 2000)),
+        reward_type=args.train.reward_type,
+        action_scheme=_get_env_value(args, "scheme", "EMS"),
+        max_boxes=int(_get_env_value(args, "max_boxes", 300)),
+        max_candidates=max_candidates,
+        max_points=int(_get_env_value(args, "max_points", 0)),
+        k_placement=max_candidates,
+        item_set=[],
+    )
+
+
 def make_envs(args):
+    # 학습/평가가 서로 다른 split을 보도록 분리한다.
+    train_dataset_path = _get_env_value(
+        args, "bed_dataset_path_train", _get_env_value(args, "bed_dataset_path", "data/bed_bpp/splits/bed_bpp_v1_train.json")
+    )
+    val_dataset_path = _get_env_value(
+        args, "bed_dataset_path_val", _get_env_value(args, "bed_eval_dataset_path", "data/bed_bpp/splits/bed_bpp_v1_val.json")
+    )
+    train_dataset_path = _resolve_dataset_path(str(train_dataset_path))
+    val_dataset_path = _resolve_dataset_path(str(val_dataset_path))
+
+    train_env_kwargs = _build_env_kwargs(args, train_dataset_path)
+    test_env_kwargs = _build_env_kwargs(args, val_dataset_path)
 
     train_envs = ts.env.SubprocVectorEnv(
-        [lambda: gym.make(args.env.id, 
-                          container_size=args.env.container_size,
-                          enable_rotation=args.env.rot,
-                          data_type=args.env.box_type,
-                          item_set=args.env.box_size_set, 
-                          reward_type=args.train.reward_type,
-                          action_scheme=args.env.scheme,
-                          k_placement=args.env.k_placement) 
+        [lambda: gym.make(args.env.id, **train_env_kwargs)
                           for _ in range(args.train.num_processes)]
     )
     test_envs = ts.env.SubprocVectorEnv(
-        [lambda: gym.make(args.env.id, 
-                          container_size=args.env.container_size,
-                          enable_rotation=args.env.rot,
-                          data_type=args.env.box_type,
-                          item_set=args.env.box_size_set, 
-                          reward_type=args.train.reward_type,
-                          action_scheme=args.env.scheme,
-                          k_placement=args.env.k_placement) 
+        [lambda: gym.make(args.env.id, **test_env_kwargs)
                           for _ in range(1)]
     )
     train_envs.seed(args.seed)
@@ -68,10 +104,13 @@ def make_envs(args):
 
 
 def build_net(args, device):
+    max_candidates = int(_get_env_value(args, "max_candidates", _get_env_value(args, "k_placement", 80)))
+    bed_target_height = int(_get_env_value(args, "bed_target_height", 2000))
+    # 모델 입력은 fixed-length dict 관측을 사용하므로 후보 개수(max_candidates)를 핵심 크기로 사용한다.
     feature_net = model.ShareNet(
-        k_placement=args.env.k_placement, 
-        box_max_size=args.env.box_big, 
-        container_size=args.env.container_size, 
+        k_placement=max_candidates,
+        box_max_size=int(_get_env_value(args, "box_big", 1000)),
+        container_size=[1200, 800, bed_target_height],
         embed_size=args.model.embed_dim, 
         num_layers=args.model.num_layers,
         forward_expansion=args.model.forward_expansion,
@@ -90,7 +129,7 @@ def build_net(args, device):
 
     critic = model.CriticHead(
         preprocess_net=feature_net, 
-        k_placement=args.env.k_placement,
+        k_placement=max_candidates,
         embed_size=args.model.embed_dim,
         padding_mask=args.model.padding_mask,
         device=device, 
@@ -100,12 +139,15 @@ def build_net(args, device):
 
 
 def train(args):
+    max_candidates = int(_get_env_value(args, "max_candidates", _get_env_value(args, "k_placement", 80)))
 
     date = time.strftime(r'%Y.%m.%d-%H-%M-%S', time.localtime(time.time()))
     time_str = args.env.id + "_" + \
-        str(args.env.container_size[0]) + "-" + str(args.env.container_size[1]) + "-" + str(args.env.container_size[2]) + "_" + \
-        args.env.scheme + "_" + str(args.env.k_placement) + "_" +\
-        args.env.box_type + "_" + \
+        str(_get_env_value(args, "container_size", [10, 10, 10])[0]) + "-" + \
+        str(_get_env_value(args, "container_size", [10, 10, 10])[1]) + "-" + \
+        str(_get_env_value(args, "container_size", [10, 10, 10])[2]) + "_" + \
+        _get_env_value(args, "scheme", "EMS") + "_" + str(max_candidates) + "_" +\
+        "bed" + "_" + \
         args.train.algo  + '_' \
         'seed' + str(args.seed) + "_" + \
         args.opt.optimizer + "_" \

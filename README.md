@@ -83,3 +83,97 @@ If you find this work useful, please consider citing:
 
 ## License
 This source code is released only for academic use. Please do not use it for commercial purposes without authorization of the author.
+
+---
+
+## BED-BPP Branch Guide (1mm Fidelity)
+
+이 브랜치는 기존 RS on-the-fly 데이터셋 대신 `GOPT/bed-bpp_v1.json` 기반 학습을 위해 수정되었습니다.
+
+현재 브랜치의 핵심 정책:
+- `data_type='bed'`만 지원 (random 모드 제거)
+- 데이터 단위는 `mm` 그대로 사용
+- 학습 시 정수 mm 원본을 유지하고, 모델 입력 직전에만 정규화
+
+관련 상세 문서는 아래를 참고하세요.
+- `GOPT/docs/bed_protocol.md`
+- `GOPT/docs/experiment_plan.md`
+
+## BED Quick Start
+
+아래 명령은 저장소 루트(`/home/user/Airlab/BPP`) 기준입니다.
+
+### 1) Split 생성 (고정 seed)
+
+```bash
+python GOPT/scripts/make_bed_splits.py \
+  --source GOPT/bed-bpp_v1.json \
+  --out-dir GOPT/data/bed_bpp/splits \
+  --seed 42 \
+  --train-ratio 0.8 \
+  --val-ratio 0.1 \
+  --test-ratio 0.1
+```
+
+생성 파일:
+- `GOPT/data/bed_bpp/splits/bed_bpp_v1_train.json`
+- `GOPT/data/bed_bpp/splits/bed_bpp_v1_val.json`
+- `GOPT/data/bed_bpp/splits/bed_bpp_v1_test.json`
+- `GOPT/data/bed_bpp/splits/split_manifest.json`
+
+### 2) 데이터 충실도 검증
+
+```bash
+python GOPT/scripts/validate_bed_fidelity.py \
+  --source GOPT/bed-bpp_v1.json \
+  --splits-dir GOPT/data/bed_bpp/splits \
+  --check-creator \
+  --creator-seed 42 \
+  --out-json GOPT/data/bed_bpp/validation/fidelity_report.json \
+  --out-csv GOPT/data/bed_bpp/validation/fidelity_report.csv
+```
+
+### 3) 환경 스모크 테스트
+
+```bash
+python GOPT/scripts/smoke_bed_env.py \
+  --env-id OnlinePackBed-v1 \
+  --dataset-path GOPT/data/bed_bpp/splits/bed_bpp_v1_val.json \
+  --episodes 10 \
+  --max-steps 128 \
+  --seed 42 \
+  --max-candidates 80 \
+  --max-boxes 300
+```
+
+### 4) 학습
+
+```bash
+python GOPT/ts_train.py --config cfg/config.yaml --device 0
+```
+
+기본 split 매핑:
+- train env: `env.bed_dataset_path_train`
+- eval env(val): `env.bed_dataset_path_val`
+
+### 5) 평가
+
+```bash
+python GOPT/ts_test.py --config cfg/config.yaml --device 0 --ckp /path/to/policy_step_final.pth
+```
+
+기본적으로 `env.bed_dataset_path_test`를 사용합니다.
+
+## BED Config Keys
+
+`GOPT/cfg/config.yaml`의 주요 키:
+- `env.box_type: bed`
+- `env.bed_dataset_path_train`
+- `env.bed_dataset_path_val`
+- `env.bed_dataset_path_test`
+- `env.bed_dataset_seed`
+- `env.bed_dataset_shuffle_orders`
+- `env.resolution_mm: 1`
+- `env.max_boxes`
+- `env.max_candidates`
+- `env.max_points`

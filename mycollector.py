@@ -141,6 +141,17 @@ class PackCollector(Collector):
         episode_start_indices = []
         episode_ratios = []
         episode_nums = []
+        episode_order_done = []
+        episode_order_ids = []
+        episode_targets = []
+
+        def _slice_info_field(field_name: str, env_idx: np.ndarray, default_value):
+            if field_name not in self.data.info:
+                return np.asarray([default_value for _ in env_idx])
+            arr = np.asarray(self.data.info[field_name])
+            if arr.ndim == 0:
+                arr = np.asarray([arr.item() for _ in range(len(ready_env_ids))], dtype=object)
+            return arr[env_idx]
 
         while True:
             assert len(self.data) == len(ready_env_ids)
@@ -228,6 +239,9 @@ class PackCollector(Collector):
 
                 episode_ratios.append(self.data.info['ratio'][env_ind_local])
                 episode_nums.append(self.data.info['counter'][env_ind_local])
+                episode_order_done.append(_slice_info_field('order_done', env_ind_local, False))
+                episode_order_ids.append(_slice_info_field('order_id', env_ind_local, ""))
+                episode_targets.append(_slice_info_field('target', env_ind_local, ""))
                 # now we copy obs_next to obs, but since there might be
                 # finished episodes, we have to reset finished envs first.
                 self._reset_env_with_ids(
@@ -272,16 +286,27 @@ class PackCollector(Collector):
             self.reset_env()
 
         if episode_count > 0:
-            rews, lens, idxs, ratios, nums = list(
+            rews, lens, idxs, ratios, nums, order_done_flags, order_ids, targets = list(
                 map(
                     np.concatenate,
-                    [episode_rews, episode_lens, episode_start_indices, episode_ratios, episode_nums]
+                    [
+                        episode_rews,
+                        episode_lens,
+                        episode_start_indices,
+                        episode_ratios,
+                        episode_nums,
+                        episode_order_done,
+                        episode_order_ids,
+                        episode_targets,
+                    ]
                 )
             )
             rew_mean, rew_std = rews.mean(), rews.std()
             len_mean, len_std = lens.mean(), lens.std()
             ratio_mean, ratio_std = ratios.mean(), ratios.std()
             num_mean, num_std = nums.mean(), nums.std()
+            order_done_flags = order_done_flags.astype(bool)
+            order_completion_rate = float(order_done_flags.mean()) if len(order_done_flags) > 0 else 0.0
         else:
             rews, lens, idxs = np.array([]), np.array([], int), np.array([], int)
             rew_mean = rew_std = len_mean = len_std = 0
@@ -289,6 +314,10 @@ class PackCollector(Collector):
             nums = np.array([])
             ratio_mean = ratio_std = 0
             num_mean = num_std = 0
+            order_done_flags = np.array([], dtype=bool)
+            order_ids = np.array([], dtype=object)
+            targets = np.array([], dtype=object)
+            order_completion_rate = 0.0
 
         return {
             "n/ep": episode_count,
@@ -306,4 +335,8 @@ class PackCollector(Collector):
             "nums": nums,
             "num": num_mean,
             "num_std": num_std,
+            "order_done_flags": order_done_flags,
+            "order_completion_rate": order_completion_rate,
+            "order_ids": order_ids,
+            "targets": targets,
         }

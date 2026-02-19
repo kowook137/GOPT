@@ -5,13 +5,31 @@ cuda_deterministic: True
 log_interval: 10               # How often to print training logs
 
 env:
-  id: OnlinePack-v1            # env name OnlinePack-v1, PCT-v0
-  scheme: EMS                  # the scheme of generating candidate map: heightmap, EP, FC
+  id: OnlinePack-v1            # gym env id
+  scheme: EMS                  # candidate 생성 방식(현재는 EMS 기준으로 사용)
   rot: True
-  box_type: random              # random, cut
+  box_type: bed                 # 현재 브랜치는 BED 모드만 지원
+
+  # BED split 경로를 학습/평가에서 분리해 고정 사용한다.
+  bed_dataset_path_train: GOPT/data/bed_bpp/splits/bed_bpp_v1_train.json
+  bed_dataset_path_val: GOPT/data/bed_bpp/splits/bed_bpp_v1_val.json
+  bed_dataset_path_test: GOPT/data/bed_bpp/splits/bed_bpp_v1_test.json
+  bed_dataset_seed: 42
+  bed_dataset_shuffle_orders: True
+
+  # BED target 팔레트 높이는 mm 기준으로 고정한다.
+  bed_target_height: 2000
+  resolution_mm: 1
+
+  # 고정 길이 관측 텐서 크기 설정
+  max_boxes: 300
+  max_candidates: 80
+  max_points: 0
+
+  # 레거시 호환 키(k_placement)는 max_candidates와 동일하게 유지한다.
+  k_placement: 80
   container_size: [10, 10, 10]
-  step:           
-  k_placement: 80              # number of candidate placements
+  step:
   
 
 train:
@@ -46,4 +64,3 @@ model:
   num_layers: 3
   forward_expansion: 2
   dropout: 0
-

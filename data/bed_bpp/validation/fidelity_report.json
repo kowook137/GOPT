@@ -1,0 +1,70 @@
+{
+  "source_path": "GOPT/bed-bpp_v1.json",
+  "splits_dir": "GOPT/data/bed_bpp/splits",
+  "check_creator": true,
+  "creator_seed": 42,
+  "source_orders": 10003,
+  "source_items": 428718,
+  "partition_check": {
+    "union_equals_source": true,
+    "split_overlap_count": 0,
+    "missing_ids_count": 0,
+    "extra_ids_count": 0,
+    "missing_ids_sample": [],
+    "extra_ids_sample": []
+  },
+  "splits": [
+    {
+      "split": "train",
+      "orders": 8003,
+      "items": 342352,
+      "missing_in_source": 0,
+      "source_order_missing_in_split": 2000,
+      "item_count_mismatch": 0,
+      "item_key_order_mismatch": 0,
+      "item_dim_mismatch": 0,
+      "item_type_mismatch": 0,
+      "target_mismatch": 0,
+      "creator_order_mismatch": 0,
+      "creator_item_dim_mismatch": 0,
+      "creator_item_type_mismatch": 0,
+      "creator_stop_mismatch": 0,
+      "passed": true
+    },
+    {
+      "split": "val",
+      "orders": 1000,
+      "items": 42843,
+      "missing_in_source": 0,
+      "source_order_missing_in_split": 9003,
+      "item_count_mismatch": 0,
+      "item_key_order_mismatch": 0,
+      "item_dim_mismatch": 0,
+      "item_type_mismatch": 0,
+      "target_mismatch": 0,
+      "creator_order_mismatch": 0,
+      "creator_item_dim_mismatch": 0,
+      "creator_item_type_mismatch": 0,
+      "creator_stop_mismatch": 0,
+      "passed": true
+    },
+    {
+      "split": "test",
+      "orders": 1000,
+      "items": 43523,
+      "missing_in_source": 0,
+      "source_order_missing_in_split": 9003,
+      "item_count_mismatch": 0,
+      "item_key_order_mismatch": 0,
+      "item_dim_mismatch": 0,
+      "item_type_mismatch": 0,
+      "target_mismatch": 0,
+      "creator_order_mismatch": 0,
+      "creator_item_dim_mismatch": 0,
+      "creator_item_type_mismatch": 0,
+      "creator_stop_mismatch": 0,
+      "passed": true
+    }
+  ],
+  "overall_passed": true
+}

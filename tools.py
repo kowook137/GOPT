@@ -8,6 +8,7 @@ from distutils.util import strtobool
 import numpy as np
 import torch
 import torch.nn as nn
+import gymnasium as gym
 from gymnasium.envs.registration import register
 
 
@@ -34,10 +35,18 @@ def backup(time_str, args, upper_policy=None):
 
 
 def registration_envs():
-    register(
-        id='OnlinePack-v1',
-        entry_point='envs.Packing:PackingEnv',
-    )
+    # 재호출 시에도 안전하도록 이미 등록된 id는 건너뛴다.
+    for env_id, entry_point, kwargs in [
+        ('OnlinePack-v1', 'envs.Packing:PackingEnv', {}),
+        ('OnlinePackBed-v1', 'envs.Packing:PackingEnv', {'data_type': 'bed'}),
+    ]:
+        if env_id in gym.envs.registry:
+            continue
+        register(
+            id=env_id,
+            entry_point=entry_point,
+            kwargs=kwargs,
+        )
     
 
 def load_policy(load_path, model, device="cpu"):

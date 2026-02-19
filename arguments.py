@@ -27,22 +27,30 @@ def get_args():
         cfg = OmegaConf.load(args.config)
     except FileNotFoundError:
         print("No configuration file found")
-    
-    box_small = int(max(cfg.env.container_size) / 10)
-    box_big = int(max(cfg.env.container_size) / 2)
-    # box_range = (5, 5, 5, 25, 25, 25)
-    box_range = (box_small, box_small, box_small, box_big, box_big, box_big)
+        raise
 
-    if cfg.get("env.step") is not None:
-        step = cfg.env.step
+    box_mode = str(cfg.env.get("box_type", "random")).lower()
+    if box_mode == "bed":
+        # BED 모드에서는 랜덤 박스 집합을 만들지 않고 데이터셋 아이템을 그대로 사용한다.
+        bed_h = int(cfg.env.get("bed_target_height", 2000))
+        box_small = 1
+        box_big = max(1200, 800, bed_h)
+        box_size_set = []
     else:
-        step = box_small
+        box_small = int(max(cfg.env.container_size) / 10)
+        box_big = int(max(cfg.env.container_size) / 2)
+        box_range = (box_small, box_small, box_small, box_big, box_big, box_big)
 
-    box_size_set = []
-    for i in range(box_range[0], box_range[3] + 1, step):
-        for j in range(box_range[1], box_range[4] + 1, step):
-            for k in range(box_range[2], box_range[5] + 1, step):
-                box_size_set.append((i, j, k))
+        if cfg.get("env.step") is not None:
+            step = cfg.env.step
+        else:
+            step = box_small
+
+        box_size_set = []
+        for i in range(box_range[0], box_range[3] + 1, step):
+            for j in range(box_range[1], box_range[4] + 1, step):
+                for k in range(box_range[2], box_range[5] + 1, step):
+                    box_size_set.append((i, j, k))
     
     cfg.env.box_small = box_small
     cfg.env.box_big = box_big
